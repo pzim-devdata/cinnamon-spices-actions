@@ -44,77 +44,123 @@ TEXT_FORMATS = {"txt", "md", "html", "json", "yaml", "csv", "py", "sh"}
 
 # ===== SECTION #2_GENERATION_NOM_PAR_DEFAUT =====
 def slugify(text, max_words=5, max_len=40):
-    """Nettoie un texte pour créer un nom de fichier en détectant les éléments pertinents"""
-    # Enlever les balises HTML si présentes
-    text_clean = re.sub(r'<[^>]+>', '', text)
+    """Nettoie un texte pour créer un nom de fichier en détectant le mot le plus répété"""
     
-    # Mots à ignorer (HTML/CSS et mots courants)
-    html_keywords = {'div', 'span', 'style', 'class', 'data', 'rgb', 'color', 'panel', 'quot', 
-                     'flow', 'href', 'src', 'img', 'html', 'body', 'head', 'meta', 'the', 'and', 
-                     'for', 'with', 'this', 'that', 'from'}
+    def extract_words(text_input):
+        """Extrait les mots en supportant les accents et caractères unicode"""
+        # Nettoyer les apostrophes et backticks qui cassent les mots
+        text_clean = text_input.replace("'", " ").replace("`", " ").replace("'", " ")
+        # Extraire les mots (lettres unicode, chiffres, tirets, underscores)
+        words = re.findall(r"[\w]+", text_clean.lower(), re.UNICODE)
+        return words
+    
+    # Mots courants à ignorer pour le comptage (mais pas pour l'affichage final)
+    common_words = {'le', 'la', 'les', 'un', 'une', 'des', 'de', 'du', 'au', 'aux',
+                   'je', 'tu', 'il', 'elle', 'on', 'nous', 'vous', 'ils', 'elles',
+                   'me', 'te', 'se', 'lui', 'leur', 'y', 'en',
+                   'mon', 'ton', 'son', 'ma', 'ta', 'sa', 'mes', 'tes', 'ses',
+                   'ce', 'cet', 'cette', 'ces', 'qui', 'que', 'quoi', 'dont', 'où',
+                   'et', 'ou', 'mais', 'donc', 'or', 'ni', 'car', 'si',
+                   'à', 'dans', 'par', 'pour', 'en', 'vers', 'avec', 'sans', 'sous', 'sur', 'chez',
+                   'est', 'sont', 'était', 'étaient', 'être', 'avoir', 'ai', 'as', 'a', 'ont', 'suis', 'es',
+                   'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with',
+                   'is', 'am', 'are', 'was', 'were', 'be', 'been', 'being', 'he', 'she', 'they', 'his', 'her',
+                   'this', 'that', 'these', 'those', 'it', 'its',
+                   # Mots HTML/CSS
+                   'div', 'span', 'style', 'class', 'data', 'href', 'src', 'img', 'html', 'body', 'head'}
     
     candidates = []
     
-    # STRATÉGIE 1 : Détecter les paires clé=valeur (ex: "title=Mon Document" ou "nom: Rapport")
-    kv_patterns = [
-        r'(?:title|name|nom|titre|subject|sujet|filename)\s*[=:]\s*["\']?([^"\'\n]{3,30})["\']?',
-        r'(?:Title|Name|Nom|Titre|Subject|Sujet)\s*[=:]\s*["\']?([^"\'\n]{3,30})["\']?'
-    ]
-    for pattern in kv_patterns:
-        matches = re.findall(pattern, text_clean, re.IGNORECASE)
-        if matches:
-            # Nettoyer et ajouter les valeurs trouvées
-            for match in matches[:2]:  # Prendre max 2 résultats
-                words = re.findall(r"[a-zA-Z0-9]+", match)
-                clean_words = [w.lower() for w in words if len(w) >= 3 and w.lower() not in html_keywords]
-                if clean_words:
-                    candidates.append(('kv_pair', clean_words[:4]))
+    # STRATÉGIE 0 : Extraire le titre HTML si présent (PRIORITÉ MAXIMALE)
+    title_match = re.search(r'<title[^>]*>\s*(.+?)\s*</title>', text, re.IGNORECASE | re.DOTALL)
+    if title_match:
+        title_text = title_match.group(1).strip()
+        # Décoder les entités HTML courantes
+        title_text = title_text.replace('&nbsp;', ' ').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
+        title_text = title_text.replace('&quot;', '"').replace('&#39;', "'").replace('&mdash;', '-').replace('&ndash;', '-')
+        
+        if title_text and len(title_text) >= 3:
+            title_words = extract_words(title_text)
+            clean_title = [w for w in title_words if len(w) >= 2 and w not in common_words]
+            if clean_title:
+                candidates.append(('html_title', clean_title[:max_words]))
     
-    # STRATÉGIE 2 : Détecter les mots en MAJUSCULES (titres potentiels)
-    # Chercher séquences de 2-6 mots consécutifs en majuscules
-    uppercase_pattern = r'\b([A-Z][A-Z]+(?:\s+[A-Z][A-Z]+){1,5})\b'
-    uppercase_matches = re.findall(uppercase_pattern, text_clean)
-    for match in uppercase_matches[:2]:
-        words = re.findall(r"[A-Z]+", match)
-        clean_words = [w.lower() for w in words if len(w) >= 3 and w.lower() not in html_keywords]
-        if len(clean_words) >= 2:  # Au moins 2 mots en majuscules
-            candidates.append(('uppercase', clean_words[:4]))
+    # STRATÉGIE 0a : Extraire les titres <h1>, <h2>, <h3>
+    for heading_level in ['h1', 'h2', 'h3']:
+        heading_match = re.search(rf'<{heading_level}[^>]*>(.*?)</{heading_level}>', text, re.IGNORECASE | re.DOTALL)
+        if heading_match:
+            heading_text = heading_match.group(1).strip()
+            heading_text = re.sub(r'<[^>]+>', '', heading_text)
+            heading_text = heading_text.replace('&nbsp;', ' ').replace('&amp;', '&')
+            
+            if heading_text and len(heading_text) >= 3:
+                heading_words = extract_words(heading_text)
+                clean_heading = [w for w in heading_words if len(w) >= 2 and w not in common_words]
+                if clean_heading and len(clean_heading) >= 1:
+                    candidates.append(('html_heading', clean_heading[:max_words]))
+                    break
     
-    # STRATÉGIE 3 : Détecter les mots répétés (importance par fréquence)
-    all_words = re.findall(r"[a-zA-Z]{3,}", text_clean.lower())
-    word_counts = {}
-    for word in all_words:
-        if word not in html_keywords and not word.startswith('data'):
-            word_counts[word] = word_counts.get(word, 0) + 1
+    # STRATÉGIE 0b : Extraire le texte du premier lien pertinent
+    skip_phrases = {'skip to', 'skip content', 'menu', 'navigation', 
+                   'back', 'next', 'previous', 'more', 'close'}
     
-    # Garder les mots répétés au moins 2 fois
-    repeated_words = [(word, count) for word, count in word_counts.items() if count >= 2]
-    if repeated_words:
-        # Trier par fréquence décroissante
-        repeated_words.sort(key=lambda x: x[1], reverse=True)
-        top_repeated = [word for word, count in repeated_words[:4]]
-        candidates.append(('repeated', top_repeated))
+    all_links = re.findall(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', text, re.IGNORECASE | re.DOTALL)
     
-    # STRATÉGIE 4 : Détecter la première ligne/phrase (souvent le titre)
-    first_line = text_clean.split('\n')[0].strip()
-    if len(first_line) > 5 and len(first_line) < 100:
-        first_words = re.findall(r"[a-zA-Z0-9]{3,}", first_line.lower())
-        clean_first = [w for w in first_words if w not in html_keywords][:5]
-        if len(clean_first) >= 2:
-            candidates.append(('first_line', clean_first))
+    for href_url, link_text in all_links[:15]:
+        link_text = re.sub(r'<[^>]+>', '', link_text).strip()
+        link_text = link_text.replace('&nbsp;', ' ').replace('&amp;', '&')
+        
+        if link_text and len(link_text) >= 3:
+            link_lower = link_text.lower()
+            
+            if not any(skip in link_lower for skip in skip_phrases):
+                link_words = extract_words(link_text)
+                clean_link = [w for w in link_words if len(w) >= 2 and w not in common_words]
+                
+                if clean_link and len(clean_link) >= 1:
+                    candidates.append(('html_href', clean_link[:max_words]))
+                    break
     
-    # STRATÉGIE 5 : Fallback - premiers mots significatifs du texte
-    words = re.findall(r"[a-zA-Z0-9]{3,}", text_clean.lower())
-    words_filtered = [w for w in words if w not in html_keywords and not w.startswith('data')]
-    if words_filtered:
-        candidates.append(('fallback', words_filtered[:max_words]))
+    # Enlever les balises HTML pour les autres stratégies
+    text_clean = re.sub(r'<[^>]+>', '', text)
     
-    # Sélectionner le meilleur candidat (ordre de priorité)
+    # STRATÉGIE PRINCIPALE : Mot le plus répété + phrase jusqu'à ce mot
+    all_words = extract_words(text_clean)
+    
+    if len(all_words) >= 3:  # Au moins 3 mots dans le texte
+        # 1. Compter les occurrences (en excluant les mots courants)
+        word_counts = {}
+        for word in all_words:
+            if len(word) >= 3 and word not in common_words:
+                word_counts[word] = word_counts.get(word, 0) + 1
+        
+        # 2. Trouver le mot le plus répété
+        if word_counts:
+            most_repeated_word = max(word_counts, key=word_counts.get)
+            
+            # 3. Trouver la première occurrence de ce mot
+            try:
+                first_occurrence_index = all_words.index(most_repeated_word)
+                
+                # 4. Prendre les N mots AVANT + le mot lui-même (max 4-5 mots au total)
+                start_index = max(0, first_occurrence_index - (max_words - 1))
+                phrase_words = all_words[start_index:first_occurrence_index + 1]
+                
+                # 5. Garder TOUS les mots (même les petits mots courants)
+                # Filtrer seulement les mots de moins de 2 caractères
+                phrase_clean = [w for w in phrase_words if len(w) >= 2]
+                
+                if len(phrase_clean) >= 1:
+                    candidates.append(('repeated_phrase', phrase_clean[:max_words]))
+            except ValueError:
+                pass
+    
+    # Sélectionner le meilleur candidat
     if not candidates:
         return None
     
-    # Priorité : kv_pair > uppercase > repeated > first_line > fallback
-    priority_order = ['kv_pair', 'uppercase', 'repeated', 'first_line', 'fallback']
+    # Priorité : html_title > html_heading > repeated_phrase > html_href
+    priority_order = ['html_title', 'html_heading', 'repeated_phrase', 'html_href']
     for strategy in priority_order:
         for cand_type, cand_words in candidates:
             if cand_type == strategy and cand_words:
@@ -454,8 +500,8 @@ def main() -> None:
     
     directory = sys.argv[1].replace("\\ ", " ")
     
-    # Récupérer d'abord le contenu du presse-papiers (avec texte extrait pour le nom)
-    content_preview, content_type_preview = get_clipboard_content(preserve_html=False)
+    # Récupérer d'abord le contenu du presse-papiers (TOUJOURS avec HTML brut pour l'analyse)
+    content_preview, content_type_preview = get_clipboard_content(preserve_html=True)
     
     if not content_preview:
         show_message(NO_CLIPBOARD_CONTENT, Gtk.MessageType.WARNING)
